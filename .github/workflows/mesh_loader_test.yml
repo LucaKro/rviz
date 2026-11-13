@@ -1,0 +1,42 @@
+name: Mesh loader tests
+
+# Builds rviz_rendering and rviz_rendering_tests on rolling and runs the mesh loader tests.
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  mesh_loader_test:
+    name: rolling mesh loader tests
+    runs-on: ubuntu-latest
+    container: ros:rolling
+    steps:
+      - name: Install git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - uses: actions/checkout@v4
+        with:
+          path: src/rviz
+
+      - name: Install dependencies
+        run: |
+          apt-get install -y xvfb libgl1-mesa-dri
+          rosdep update
+          rosdep install --from-paths src/rviz/rviz_rendering src/rviz/rviz_rendering_tests --ignore-src -y
+
+      - name: Build
+        shell: bash
+        run: |
+          source /opt/ros/rolling/setup.bash
+          # rviz_rendering_tests only builds its display tests when DISPLAY is set
+          export DISPLAY=:99
+          colcon build --packages-select rviz_rendering rviz_rendering_tests --event-handlers console_direct+
+
+      - name: Run the mesh loader tests
+        shell: bash
+        run: |
+          source install/setup.bash
+          timeout 600 xvfb-run -a -s "-screen 0 1280x1024x24" build/rviz_rendering_tests/mesh_loader_test_target
