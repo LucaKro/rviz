@@ -1,0 +1,73 @@
+name: Mesh loader tests
+
+# Builds rviz_rendering and rviz_rendering_tests on rolling and runs the mesh loader tests,
+# once with this branch's fix and once with the fix undone, where the new test must crash.
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  mesh_loader_test:
+    name: rolling, ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    container: ros:rolling
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [with the fix, without the fix]
+    steps:
+      - name: Install git
+        run: |
+          apt-get update
+          apt-get install -y git
+
+      - uses: actions/checkout@v4
+        with:
+          path: src/rviz
+
+      - name: Undo the fix, keeping the new test
+        if: matrix.variant == 'without the fix'
+        working-directory: src/rviz
+        run: |
+          git config --global --add safe.directory "$PWD"
+          git fetch --depth 1 https://github.com/ros2/rviz.git rolling
+          git checkout FETCH_HEAD -- rviz_rendering/src/rviz_rendering/mesh_loader_helpers/assimp_loader.hpp
+          git diff HEAD
+
+      - name: Install dependencies
+        run: |
+          apt-get install -y xvfb libgl1-mesa-dri
+          rosdep update
+          rosdep install --from-paths src/rviz/rviz_rendering src/rviz/rviz_rendering_tests --ignore-src -y
+
+      - name: Build
+        shell: bash
+        run: |
+          source /opt/ros/rolling/setup.bash
+          # rviz_rendering_tests only builds its display tests when DISPLAY is set
+          export DISPLAY=:99
+          colcon build --packages-select rviz_rendering rviz_rendering_tests --event-handlers console_direct+
+
+      - name: Run the mesh loader tests
+        shell: bash
+        run: |
+          source install/setup.bash
+          test_binary=build/rviz_rendering_tests/mesh_loader_test_target
+          if [ "${{ matrix.variant }}" = "with the fix" ]; then
+            xvfb-run -a -s "-screen 0 1280x1024x24" "$test_binary"
+            echo "### With the fix: all mesh loader tests pass" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          set +e
+          timeout 300 xvfb-run -a -s "-screen 0 1280x1024x24" "$test_binary" \
+            --gtest_filter='*more_than_65535_faces*'
+          status=$?
+          set -e
+          echo "Exit status without the fix: $status"
+          case "$status" in
+            139) outcome="crashed with a segmentation fault (exit status 139)" ;;
+            124) outcome="hung until the 300 s timeout (exit status 124)" ;;
+            *) echo "Expected a crash or a hang, got exit status $status"; exit 1 ;;
+          esac
+          echo "### Without the fix: the new test $outcome" >> "$GITHUB_STEP_SUMMARY"
